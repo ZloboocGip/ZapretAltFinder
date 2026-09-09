@@ -64,6 +64,7 @@ internal sealed class MainForm : Form
     readonly ComboBox discordFake = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     readonly ComboBox gameFake = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     readonly ComboBox themePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
+    readonly CheckBox startupWithWindows = new() { Text = "Запускать с Windows" };
     readonly ComboBox templates = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
     readonly ComboBox listPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
     readonly TextBox listEditor = new() { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, AcceptsReturn = true, AcceptsTab = true, WordWrap = false, Font = new Font("Consolas", 10) };
@@ -73,6 +74,9 @@ internal sealed class MainForm : Form
     readonly ComboBox referenceKind = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
     readonly ComboBox referenceFile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
     readonly DataGridView referenceGrid = new() { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect };
+    bool updatingStartupSetting;
+
+    const string StartupTaskName = "ZapretAltFinder";
 
     static readonly IReadOnlyDictionary<string, string[]> DomainTemplates = new Dictionary<string, string[]>
     {
@@ -245,6 +249,24 @@ internal sealed class MainForm : Form
             SaveConfig();
         };
         Add("Тема", themePicker, "сохраняется в utils\\alt-finder.json");
+        SetStartupCheckbox(IsStartupTaskEnabled());
+        startupWithWindows.CheckedChanged += (_, _) =>
+        {
+            if (updatingStartupSetting) return;
+            try
+            {
+                SetStartupTask(startupWithWindows.Checked);
+                status.Text = startupWithWindows.Checked
+                    ? "Автозапуск включён через Планировщик задач."
+                    : "Автозапуск выключен.";
+            }
+            catch (Exception ex)
+            {
+                SetStartupCheckbox(!startupWithWindows.Checked);
+                MessageBox.Show(this, $"Не удалось изменить автозапуск.\n\n{ex.Message}", "Планировщик задач", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        };
+        Add("Автозапуск", startupWithWindows, "Планировщик задач: при входе текущего пользователя");
         Add("IPSet Filter", ipsetMode, "lists\\ipset-all.txt (+ .backup)");
         Add("Обновления", updates, "utils\\check_updates.enabled");
         Add("Discord UDP fake", discordFake, "bin\\ACTIVE_DISCORD_UDP.bin");
@@ -260,6 +282,81 @@ internal sealed class MainForm : Form
         };
         service.Click += (_, _) => StartVisible(Path.Combine(root, "service.bat"));
         page.Controls.Add(utils); page.Controls.Add(table);
+    }
+
+    void SetStartupCheckbox(bool value)
+    {
+        updatingStartupSetting = true;
+        startupWithWindows.Checked = value;
+        updatingStartupSetting = false;
+    }
+
+    static dynamic ConnectTaskScheduler()
+    {
+        var type = Type.GetTypeFromProgID("Schedule.Service")
+            ?? throw new PlatformNotSupportedException("Планировщик задач Windows недоступен.");
+        dynamic service = Activator.CreateInstance(type)
+            ?? throw new InvalidOperationException("Не удалось подключиться к Планировщику задач.");
+        service.Connect();
+        return service;
+    }
+
+    static bool IsStartupTaskEnabled()
+    {
+        try
+        {
+            dynamic service = ConnectTaskScheduler();
+            dynamic task = service.GetFolder("\\").GetTask("\\" + StartupTaskName);
+            return task.Enabled;
+        }
+        catch (COMException)
+        {
+            return false;
+        }
+    }
+
+    void SetStartupTask(bool enabled)
+    {
+        dynamic service = ConnectTaskScheduler();
+        dynamic folder = service.GetFolder("\\");
+        if (!enabled)
+        {
+            try { folder.DeleteTask(StartupTaskName, 0); }
+            catch (COMException) { }
+            return;
+        }
+
+        string executable = Environment.ProcessPath ?? Application.ExecutablePath;
+        if (!executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Автозапуск можно включить только для собранного ZapretAltFinder.exe.");
+
+        const int TaskCreateOrUpdate = 6;
+        const int TaskLogonTrigger = 9;
+        const int TaskActionExec = 0;
+        const int TaskLogonInteractiveToken = 3;
+        const int TaskRunLevelHighest = 1;
+
+        dynamic definition = service.NewTask(0);
+        string currentUser = WindowsIdentity.GetCurrent().Name;
+        definition.RegistrationInfo.Description = "Открывает Zapret Alt Finder при входе пользователя Windows.";
+        definition.Principal.UserId = currentUser;
+        definition.Principal.LogonType = TaskLogonInteractiveToken;
+        definition.Principal.RunLevel = TaskRunLevelHighest;
+        definition.Settings.Enabled = true;
+        definition.Settings.StartWhenAvailable = true;
+        definition.Settings.DisallowStartIfOnBatteries = false;
+        definition.Settings.StopIfGoingOnBatteries = false;
+
+        dynamic trigger = definition.Triggers.Create(TaskLogonTrigger);
+        trigger.Id = "OnLogon";
+        trigger.UserId = currentUser;
+        trigger.Enabled = true;
+
+        dynamic action = definition.Actions.Create(TaskActionExec);
+        action.Path = executable;
+        action.WorkingDirectory = root;
+
+        folder.RegisterTaskDefinition(StartupTaskName, definition, TaskCreateOrUpdate, currentUser, null, TaskLogonInteractiveToken, null);
     }
 
     bool IsDarkTheme => string.Equals(config.Theme, "Dark", StringComparison.OrdinalIgnoreCase);
