@@ -27,6 +27,7 @@ internal sealed class AppConfig
     public int WarmupMilliseconds { get; set; } = 1800;
     public string? LastStrategy { get; set; }
     public List<string> ExcludedStrategies { get; set; } = [];
+    public string Theme { get; set; } = "Light";
 }
 
 internal sealed record ProbeResult(string Host, bool Ok, int? Status, long Milliseconds, string Detail);
@@ -62,6 +63,7 @@ internal sealed class MainForm : Form
     readonly CheckBox updates = new() { Text = "Проверять обновления" };
     readonly ComboBox discordFake = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     readonly ComboBox gameFake = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
+    readonly ComboBox themePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
     readonly ComboBox templates = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
     readonly ComboBox listPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
     readonly TextBox listEditor = new() { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, AcceptsReturn = true, AcceptsTab = true, WordWrap = false, Font = new Font("Consolas", 10) };
@@ -93,6 +95,7 @@ internal sealed class MainForm : Form
         Size = new Size(1180, 780);
         StartPosition = FormStartPosition.CenterScreen;
         BuildUi();
+        ApplyTheme();
         LoadState();
         FormClosing += (_, _) => { runCts?.Cancel(); SaveConfig(); };
     }
@@ -233,6 +236,15 @@ internal sealed class MainForm : Form
         int row = 0;
         void Add(string title, Control control, string note) { table.RowStyles.Add(new RowStyle(SizeType.Absolute, 42)); table.Controls.Add(new Label { Text = title, AutoSize = true, Padding = new Padding(0, 9, 0, 0) }, 0, row); table.Controls.Add(control, 1, row); table.Controls.Add(new Label { Text = note, AutoSize = true, Padding = new Padding(0, 9, 0, 0), ForeColor = Color.DimGray }, 2, row++); }
         Add("Game Filter", gameMode, "utils\\game_filter.enabled");
+        themePicker.Items.AddRange(["Светлая", "Тёмная"]);
+        themePicker.SelectedItem = IsDarkTheme ? "Тёмная" : "Светлая";
+        themePicker.SelectedIndexChanged += (_, _) =>
+        {
+            config.Theme = themePicker.SelectedItem as string == "Тёмная" ? "Dark" : "Light";
+            ApplyTheme();
+            SaveConfig();
+        };
+        Add("Тема", themePicker, "сохраняется в utils\\alt-finder.json");
         Add("IPSet Filter", ipsetMode, "lists\\ipset-all.txt (+ .backup)");
         Add("Обновления", updates, "utils\\check_updates.enabled");
         Add("Discord UDP fake", discordFake, "bin\\ACTIVE_DISCORD_UDP.bin");
@@ -249,6 +261,92 @@ internal sealed class MainForm : Form
         service.Click += (_, _) => StartVisible(Path.Combine(root, "service.bat"));
         page.Controls.Add(utils); page.Controls.Add(table);
     }
+
+    bool IsDarkTheme => string.Equals(config.Theme, "Dark", StringComparison.OrdinalIgnoreCase);
+    readonly record struct ThemePalette(Color Back, Color Surface, Color Text, Color Muted, Color Border, Color Selection, Color SelectionText, Color Success, Color Error);
+    ThemePalette Palette => IsDarkTheme
+        ? new(Color.FromArgb(24, 26, 31), Color.FromArgb(34, 37, 44), Color.FromArgb(232, 235, 241), Color.FromArgb(170, 176, 188), Color.FromArgb(72, 77, 89), Color.FromArgb(54, 91, 138), Color.White, Color.FromArgb(31, 64, 46), Color.FromArgb(78, 40, 48))
+        : new(Color.FromArgb(245, 246, 248), Color.White, Color.FromArgb(31, 35, 42), Color.FromArgb(95, 101, 112), Color.FromArgb(210, 214, 221), Color.FromArgb(0, 120, 215), Color.White, Color.Honeydew, Color.MistyRose);
+
+    void ApplyTheme()
+    {
+        ApplyThemeTo(this);
+        strategyMenu.BackColor = Palette.Surface;
+        strategyMenu.ForeColor = Palette.Text;
+        foreach (ToolStripItem item in strategyMenu.Items) ApplyThemeTo(item);
+        strategies.Invalidate();
+    }
+
+    void ApplyThemeTo(Control control)
+    {
+        var p = Palette;
+        control.BackColor = p.Back;
+        control.ForeColor = p.Text;
+        switch (control)
+        {
+            case Form:
+            case TabPage:
+            case TableLayoutPanel:
+            case FlowLayoutPanel:
+            case SplitContainer:
+            case Panel:
+                control.BackColor = p.Back;
+                break;
+            case TextBox text:
+                text.BackColor = p.Surface;
+                text.ForeColor = p.Text;
+                if (ReferenceEquals(text, log))
+                {
+                    text.BackColor = IsDarkTheme ? Color.FromArgb(20, 22, 26) : Color.FromArgb(250, 250, 250);
+                    text.ForeColor = IsDarkTheme ? Color.Gainsboro : Color.FromArgb(35, 38, 45);
+                }
+                break;
+            case ListBox list:
+                list.BackColor = p.Surface;
+                list.ForeColor = p.Text;
+                break;
+            case ComboBox combo:
+                combo.BackColor = p.Surface;
+                combo.ForeColor = p.Text;
+                break;
+            case Button button:
+                button.BackColor = p.Surface;
+                button.ForeColor = p.Text;
+                button.FlatStyle = FlatStyle.Flat;
+                button.FlatAppearance.BorderColor = p.Border;
+                break;
+            case NumericUpDown numeric:
+                numeric.BackColor = p.Surface;
+                numeric.ForeColor = p.Text;
+                break;
+            case CheckBox check:
+                check.BackColor = p.Back;
+                check.ForeColor = p.Text;
+                break;
+            case DataGridView grid:
+                grid.BackgroundColor = p.Surface;
+                grid.GridColor = p.Border;
+                grid.EnableHeadersVisualStyles = false;
+                grid.DefaultCellStyle.BackColor = p.Surface;
+                grid.DefaultCellStyle.ForeColor = p.Text;
+                grid.DefaultCellStyle.SelectionBackColor = p.Selection;
+                grid.DefaultCellStyle.SelectionForeColor = p.SelectionText;
+                grid.ColumnHeadersDefaultCellStyle.BackColor = IsDarkTheme ? Color.FromArgb(45, 49, 58) : Color.FromArgb(235, 238, 243);
+                grid.ColumnHeadersDefaultCellStyle.ForeColor = p.Text;
+                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = grid.ColumnHeadersDefaultCellStyle.BackColor;
+                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = p.Text;
+                break;
+        }
+        foreach (Control child in control.Controls) ApplyThemeTo(child);
+    }
+
+    void ApplyThemeTo(ToolStripItem item)
+    {
+        var p = Palette;
+        item.BackColor = p.Surface;
+        item.ForeColor = p.Text;
+    }
+    Color ResultColor(bool success) => success ? Palette.Success : Palette.Error;
 
     void BuildLists(TabPage page)
     {
@@ -604,12 +702,13 @@ internal sealed class MainForm : Form
                 foreach (var row in await ReadIpInfoAsync(ip.ToString(), CancellationToken.None))
                 {
                     int i = grid.Rows.Add(row.Name, row.Address ?? "—", row.Error);
-                    grid.Rows[i].DefaultCellStyle.BackColor = row.Address is null ? Color.MistyRose : Color.Honeydew;
+                    grid.Rows[i].DefaultCellStyle.BackColor = ResultColor(row.Address is not null);
                 }
                 status.Text = $"Проверен IP: {ip}";
             }
             finally { targetButton.Enabled = true; }
         };
+        ApplyThemeTo(dialog);
         dialog.AcceptButton = close;
         dialog.Shown += async (_, _) =>
         {
@@ -629,7 +728,7 @@ internal sealed class MainForm : Form
                 foreach (var row in rows)
                 {
                     int i = grid.Rows.Add(row.Name, row.Address ?? "—", row.Address is null ? row.Error : "получен");
-                    grid.Rows[i].DefaultCellStyle.BackColor = row.Address is null ? Color.MistyRose : Color.Honeydew;
+                    grid.Rows[i].DefaultCellStyle.BackColor = ResultColor(row.Address is not null);
                 }
                 var addresses = rows.Where(x => x.Address is not null).Select(x => x.Address!).Distinct().ToArray();
                 status.Text = addresses.Length == 0 ? "Публичный IP не получен" : $"Публичный IP: {string.Join(", ", addresses)}";
@@ -755,7 +854,7 @@ internal sealed class MainForm : Form
     void ShowResults(List<ProbeResult> probes)
     {
         results.Rows.Clear();
-        foreach (var x in probes) { int i = results.Rows.Add(x.Host, x.Ok ? $"OK ({x.Status})" : "ОШИБКА", $"{x.Milliseconds} мс", x.Detail); results.Rows[i].DefaultCellStyle.BackColor = x.Ok ? Color.Honeydew : Color.MistyRose; }
+        foreach (var x in probes) { int i = results.Rows.Add(x.Host, x.Ok ? $"OK ({x.Status})" : "ОШИБКА", $"{x.Milliseconds} мс", x.Detail); results.Rows[i].DefaultCellStyle.BackColor = ResultColor(x.Ok); }
     }
 
     async Task StopOwnedAsync()
