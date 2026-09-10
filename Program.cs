@@ -71,7 +71,7 @@ internal sealed class MainForm : Form
     readonly ComboBox discordFake = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     readonly ComboBox gameFake = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     readonly CheckBox startupWithWindows = new() { Text = "Запускать с Windows" };
-    readonly ComboBox templates = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
+    readonly ComboBox templates = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 250 };
     readonly ComboBox listPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
     readonly TextBox listEditor = new() { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, AcceptsReturn = true, AcceptsTab = true, WordWrap = false, Font = new Font("Consolas", 10) };
     readonly TextBox addDomain = new() { Width = 290, PlaceholderText = "example.org или https://example.org" };
@@ -101,6 +101,21 @@ internal sealed class MainForm : Form
                 new("UDP transport (не Voice)", "gateway.discord.gg", ServiceCheckKind.UdpTransport, Port: 443, Required: false)
             ]),
         ["Discord — простые сайты"] = FromHosts("Discord — простые сайты", "Обычная HTTPS-проверка сайтов без WSS и UDP; аналог старого шаблона.", ["discord.com", "discord.gg", "gateway.discord.gg", "cdn.discordapp.com", "updates.discord.com", "discordstatus.com"]),
+        ["Signal — сообщения и звонки"] = new(
+            "Signal — сообщения и звонки",
+            "Домены и порты взяты из официальной инструкции Signal по сетевому доступу. UDP-строки необязательны: они проверяют только транспорт, не звонок в приложении.",
+            [
+                new("Signal сайт", "signal.org", ServiceCheckKind.Https),
+                new("Signal Support", "support.signal.org", ServiceCheckKind.Https),
+                new("Signal group links", "signal.group", ServiceCheckKind.Https),
+                new("Signal usernames", "signal.me", ServiceCheckKind.Https),
+                new("Signal UDP relay 3478 (может меняться)", "turn3.voip.signal.org", ServiceCheckKind.UdpTransport, Port: 3478, Required: false),
+                new("Signal UDP group calls 10000", "sfu.voip.signal.org", ServiceCheckKind.UdpTransport, Port: 10000, Required: false)
+            ]),
+        ["Meta — Facebook и Instagram"] = FromHosts("Meta — Facebook и Instagram", "Базовая web-проверка основных доменов; не проверяет ленту, авторизацию или приложение.", ["www.facebook.com", "www.instagram.com"]),
+        ["Viber — базовый web-профиль"] = FromHosts("Viber — базовый web-профиль", "Проверяет официальный сайт и справку. Не является проверкой сообщений и звонков Viber.", ["www.viber.com", "help.viber.com"]),
+        ["WhatsApp и Telegram — web/API"] = FromHosts("WhatsApp и Telegram — web/API", "Проверяет сайт, web-клиент и публичный API. Не определяет доступность голосовых и видеозвонков.", ["www.whatsapp.com", "web.whatsapp.com", "telegram.org", "web.telegram.org", "api.telegram.org"]),
+        ["X и LinkedIn — сайты"] = FromHosts("X и LinkedIn — сайты", "Базовая проверка сайтов, без авторизации и контента аккаунта.", ["x.com", "www.linkedin.com"]),
         ["Roblox — сайт и API"] = FromHosts("Roblox — сайт и API", "Базовые HTTPS-цели Roblox.", ["www.roblox.com", "clientsettings.api.roblox.com", "versioncompatibility.api.roblox.com", "chat.roblox.com", "assetgame.roblox.com", "setup.roblox.com", "setup.rbxcdn.com", "js.rbxcdn.com", "static.rbxcdn.com"]),
         ["Steam — сайт и CDN"] = FromHosts("Steam — сайт и CDN", "Базовые HTTPS-цели Steam.", ["store.steampowered.com", "help.steampowered.com", "steamcommunity.com", "cdn.cloudflare.steamstatic.com", "steamuserimages-a.akamaihd.net", "avatars.akamai.steamstatic.com"]),
         ["YouTube — сайт и CDN"] = FromHosts("YouTube — сайт и CDN", "Базовые HTTPS-цели YouTube.", ["www.youtube.com", "youtu.be", "i.ytimg.com", "redirector.googlevideo.com", "www.google.com", "www.gstatic.com"])
@@ -117,8 +132,9 @@ internal sealed class MainForm : Form
         configPath = Path.Combine(utilsDir, "alt-finder.json");
         config = LoadConfig();
         Text = "Zapret Alt Finder";
-        MinimumSize = new Size(1000, 680);
-        Size = new Size(1180, 780);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        MinimumSize = new Size(1050, 700);
+        Size = new Size(1320, 840);
         StartPosition = FormStartPosition.CenterScreen;
         BuildUi();
         ApplyTheme();
@@ -140,16 +156,23 @@ internal sealed class MainForm : Form
         results.Columns.Add("Result", "Результат");
         results.Columns.Add("Time", "Время");
         results.Columns.Add("Details", "Подробности");
+        results.Columns["Target"].FillWeight = 22;
+        results.Columns["Type"].FillWeight = 14;
+        results.Columns["Result"].FillWeight = 15;
+        results.Columns["Time"].FillWeight = 10;
+        results.Columns["Details"].FillWeight = 39;
+        results.Columns["Target"].MinimumWidth = 150;
+        results.Columns["Details"].MinimumWidth = 340;
 
         var left = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4 };
         left.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 52));
-        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        left.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
         left.Controls.Add(new Label { Text = "BAT-стратегии", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
         ConfigureStrategyList();
         left.Controls.Add(strategies, 0, 1);
-        var domainHeader = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
+        var domainHeader = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoScroll = false, Padding = new Padding(0, 3, 0, 0), Margin = Padding.Empty };
         domainHeader.Controls.Add(new Label { Text = "Профиль:", AutoSize = true, Padding = new Padding(0, 5, 3, 0) });
         templates.Items.AddRange(ServiceProfiles.Keys.ToArray()); templates.SelectedIndex = 0;
         var loadTemplate = new Button { Text = "Загрузить профиль", AutoSize = true, Height = 25, Margin = new Padding(4, 1, 0, 0) };
@@ -160,13 +183,20 @@ internal sealed class MainForm : Form
         left.Controls.Add(domains, 0, 3);
 
         var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2 };
-        right.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
-        right.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
+        right.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
+        right.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
         right.Controls.Add(results, 0, 0); right.Controls.Add(log, 0, 1);
-        var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 330, FixedPanel = FixedPanel.Panel1 };
+        var split = new SplitContainer { Dock = DockStyle.Fill, SplitterWidth = 6 };
         split.Panel1.Controls.Add(left); split.Panel2.Controls.Add(right);
+        split.HandleCreated += (_, _) => BeginInvoke(() =>
+        {
+            split.Panel1MinSize = 340;
+            split.Panel2MinSize = 520;
+            int maximum = split.Width - split.Panel2MinSize - split.SplitterWidth;
+            split.SplitterDistance = Math.Clamp(430, split.Panel1MinSize, Math.Max(split.Panel1MinSize, maximum));
+        });
 
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 48, Padding = new Padding(6), WrapContents = false, AutoScroll = true };
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(0, 46), Padding = new Padding(6), WrapContents = true, AutoScroll = false };
         timeout.Value = config.TimeoutSeconds; attempts.Value = config.Attempts; warmup.Value = config.WarmupMilliseconds;
         toolbar.Controls.AddRange([findButton, testButton, baselineButton, publicIpButton, stopButton, runButton, stopZapretButton,
             new Label { Text = "Connect timeout, с:", AutoSize = true, Padding = new Padding(10, 8, 0, 0) }, timeout,
@@ -966,23 +996,23 @@ internal sealed class MainForm : Form
 
     async Task<ProbeResult> ProbeTargetAsync(ServiceTarget target, int count, int seconds, int requestSeconds, CancellationToken token)
     {
+        var total = Stopwatch.StartNew();
         string title = TargetTitle(target);
         string type = CheckTypeName(target.Kind);
         IPAddress[] resolved;
         try
         {
             resolved = await Dns.GetHostAddressesAsync(target.Host, token).WaitAsync(TimeSpan.FromSeconds(seconds), token);
-            if (resolved.Length == 0) return new ProbeResult(title, type, false, null, 0, "DNS: адреса не найдены (NXDOMAIN/NO_DATA)", target.Required);
+            if (resolved.Length == 0) return new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), "DNS: адреса не найдены (NXDOMAIN/NO_DATA)", target.Required);
         }
-        catch (SocketException ex) { return new ProbeResult(title, type, false, null, 0, $"DNS: имя не существует или недоступно ({ex.SocketErrorCode})", target.Required); }
-        catch (TimeoutException) { return new ProbeResult(title, type, false, null, 0, "DNS: таймаут", target.Required); }
+        catch (SocketException ex) { return new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), $"DNS: имя не существует или недоступно ({ex.SocketErrorCode})", target.Required); }
+        catch (TimeoutException) { return new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), "DNS: таймаут", target.Required); }
 
         string addressText = string.Join(", ", resolved.Take(3).Select(x => x.ToString()));
         ProbeResult last = new(title, type, false, null, 0, "нет ответа", target.Required);
         for (int attempt = 1; attempt <= count; attempt++)
         {
             token.ThrowIfCancellationRequested();
-            var sw = Stopwatch.StartNew();
             try
             {
                 if (target.Kind == ServiceCheckKind.Https)
@@ -991,7 +1021,7 @@ internal sealed class MainForm : Form
                     using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(requestSeconds) };
                     client.DefaultRequestHeaders.UserAgent.ParseAdd("ZapretAltFinder/1.0");
                     using var response = await client.GetAsync($"https://{target.Host}{target.Path}", HttpCompletionOption.ResponseHeadersRead, token);
-                    return new ProbeResult(title, type, true, (int)response.StatusCode, sw.ElapsedMilliseconds, $"IP {addressText}; HTTP {(int)response.StatusCode}, попытка {attempt}", target.Required);
+                    return new ProbeResult(title, type, true, (int)response.StatusCode, ElapsedMilliseconds(total), $"IP {addressText}; HTTP {(int)response.StatusCode}, попытка {attempt}", target.Required);
                 }
 
                 if (target.Kind == ServiceCheckKind.WebSocket)
@@ -1001,38 +1031,45 @@ internal sealed class MainForm : Form
                     connectCts.CancelAfter(TimeSpan.FromSeconds(requestSeconds));
                     await socket.ConnectAsync(new Uri($"wss://{target.Host}{target.Path}"), connectCts.Token);
                     socket.Abort();
-                    return new ProbeResult(title, type, true, null, sw.ElapsedMilliseconds, $"IP {addressText}; WSS handshake, попытка {attempt}", target.Required);
+                    return new ProbeResult(title, type, true, null, ElapsedMilliseconds(total), $"IP {addressText}; WSS handshake, попытка {attempt}", target.Required);
                 }
 
                 using var udp = new UdpClient(resolved[0].AddressFamily);
                 udp.Connect(resolved[0], target.Port);
                 await udp.SendAsync(Array.Empty<byte>(), 0).WaitAsync(TimeSpan.FromSeconds(seconds), token);
-                return new ProbeResult(title, type, true, null, sw.ElapsedMilliseconds, $"IP {addressText}; UDP пакет отправлен. Это не проверка голосовой сессии Discord.", target.Required);
+                return new ProbeResult(title, type, true, null, ElapsedMilliseconds(total), $"IP {addressText}; UDP пакет отправлен. Это не проверка звонка или сессии приложения.", target.Required);
             }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
-                last = new ProbeResult(title, type, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; таймаут {requestSeconds} с, попытка {attempt}", target.Required);
+                last = new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), $"IP {addressText}; таймаут {requestSeconds} с, попытка {attempt}", target.Required);
             }
             catch (WebSocketException ex)
             {
-                last = new ProbeResult(title, type, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; WSS: {ex.Message}", target.Required);
+                last = new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), $"IP {addressText}; WSS: {ex.Message}", target.Required);
             }
             catch (HttpRequestException ex)
             {
-                last = new ProbeResult(title, type, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; HTTPS: {ex.Message}", target.Required);
+                last = new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), $"IP {addressText}; HTTPS: {ex.Message}", target.Required);
             }
             catch (SocketException ex)
             {
-                last = new ProbeResult(title, type, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; socket: {ex.SocketErrorCode}", target.Required);
+                last = new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), $"IP {addressText}; socket: {ex.SocketErrorCode}", target.Required);
             }
         }
         return last;
     }
 
+    static long ElapsedMilliseconds(Stopwatch stopwatch) => Math.Max(1, stopwatch.ElapsedMilliseconds);
+
     void ShowResults(List<ProbeResult> probes)
     {
         results.Rows.Clear();
-        foreach (var x in probes) { int i = results.Rows.Add(x.Target, x.Type, x.Ok ? $"OK{(x.Status is null ? "" : $" ({x.Status})")}" : "ОШИБКА", $"{x.Milliseconds} мс", x.Detail); results.Rows[i].DefaultCellStyle.BackColor = ResultColor(x.Ok); }
+        foreach (var x in probes)
+        {
+            string result = x.Ok ? $"OK{(x.Status is null ? "" : $" ({x.Status})")}" : x.Required ? "ОШИБКА" : "НЕОБЯЗАТЕЛЬНО";
+            int i = results.Rows.Add(x.Target, x.Type, result, $"{x.Milliseconds} мс", x.Detail);
+            results.Rows[i].DefaultCellStyle.BackColor = x.Ok ? ResultColor(true) : x.Required ? ResultColor(false) : Color.FromArgb(255, 249, 220);
+        }
     }
 
     async Task StopOwnedAsync()

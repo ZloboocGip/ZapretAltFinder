@@ -8,8 +8,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>ZapretAltFinder</AssemblyName>
     <RootNamespace>ZapretAltFinder</RootNamespace>
-    <Version>1.13.0</Version>
-    <FileVersion>1.13.0.0</FileVersion>
-    <InformationalVersion>1.13</InformationalVersion>
+    <Version>1.14.0</Version>
+    <FileVersion>1.14.0.0</FileVersion>
+    <InformationalVersion>1.14</InformationalVersion>
   </PropertyGroup>
 </Project>
