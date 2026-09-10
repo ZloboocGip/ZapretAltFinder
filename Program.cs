@@ -82,6 +82,11 @@ internal sealed class MainForm : Form
     readonly ComboBox referenceKind = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
     readonly ComboBox referenceFile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
     readonly DataGridView referenceGrid = new() { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect };
+    readonly ComboBox customBaseStrategy = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };
+    readonly TextBox customStrategyName = new() { Width = 320, PlaceholderText = "Например: Мой Discord вариант" };
+    readonly NumericUpDown customRepeats = new() { Minimum = 1, Maximum = 20, Value = 6, Width = 80 };
+    readonly NumericUpDown customSplitPosition = new() { Minimum = 1, Maximum = 32, Value = 1, Width = 80 };
+    readonly TextBox customPreview = new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, BackColor = Color.White, BorderStyle = BorderStyle.FixedSingle };
     bool updatingStartupSetting;
     bool applyingProfile;
     ServiceProfile? activeProfile;
@@ -153,7 +158,8 @@ internal sealed class MainForm : Form
         var settingsPage = new TabPage("Настройки Flowseal");
         var listsPage = new TabPage("Списки доменов");
         var strategyPage = new TabPage("Стратегия и списки");
-        tabs.TabPages.AddRange([testPage, listsPage, strategyPage, settingsPage]);
+        var customStrategyPage = new TabPage("Создать стратегию");
+        tabs.TabPages.AddRange([testPage, listsPage, strategyPage, customStrategyPage, settingsPage]);
 
         results.Columns.Add("Target", "Цель");
         results.Columns.Add("Type", "Проверка");
@@ -224,6 +230,7 @@ internal sealed class MainForm : Form
         BuildSettings(settingsPage);
         BuildLists(listsPage);
         BuildStrategyLists(strategyPage);
+        BuildCustomStrategy(customStrategyPage);
         Controls.Add(tabs);
     }
 
@@ -559,15 +566,63 @@ internal sealed class MainForm : Form
         page.Controls.Add(referenceGrid); page.Controls.Add(header); page.Controls.Add(hint);
     }
 
+    void BuildCustomStrategy(TabPage page)
+    {
+        var title = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 64,
+            Padding = new Padding(18, 14, 18, 0),
+            Font = new Font(Font, FontStyle.Bold),
+            Text = "Мастер своей стратегии — копия проверенного ALT с двумя простыми настройками"
+        };
+        var form = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, Padding = new Padding(18, 0, 18, 0) };
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 340));
+        form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        int row = 0;
+        void Add(string label, Control control, string hint)
+        {
+            form.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+            form.Controls.Add(new Label { Text = label, AutoSize = true, Padding = new Padding(0, 10, 0, 0) }, 0, row);
+            form.Controls.Add(control, 1, row);
+            form.Controls.Add(new Label { Text = hint, AutoSize = true, Padding = new Padding(0, 10, 0, 0), ForeColor = Color.DimGray }, 2, row++);
+        }
+        Add("Основа", customBaseStrategy, "Программа не создаёт команду с нуля — берёт существующий ALT.");
+        Add("Название", customStrategyName, "Новый BAT будет сохранён в корень папки Zapret.");
+        Add("Интенсивность", customRepeats, "Количество повторов: 1–20. Обычно достаточно 4–10.");
+        Add("TCP-позиция", customSplitPosition, "Позиция разделения: 1–32. Значение применяется только там, где оно уже есть в основе.");
+
+        var randomize = new Button { Text = "Подобрать числа", AutoSize = true, Height = 32 };
+        var create = new Button { Text = "Создать свою стратегию", AutoSize = true, Height = 32 };
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 50, Padding = new Padding(18, 4, 18, 4) };
+        actions.Controls.AddRange([randomize, create]);
+        var previewTitle = new Label { Dock = DockStyle.Top, Height = 32, Padding = new Padding(18, 8, 18, 0), Text = "Что будет изменено" };
+        var warning = new Label
+        {
+            Dock = DockStyle.Bottom,
+            Height = 58,
+            Padding = new Padding(18, 8, 18, 0),
+            ForeColor = Color.DimGray,
+            Text = "Файл основы не меняется. Если в ALT нет подходящего параметра, он остаётся как был. Созданный BAT нужно проверить через вкладку «Поиск стратегии»."
+        };
+        randomize.Click += (_, _) =>
+        {
+            customRepeats.Value = Random.Shared.Next(4, 11);
+            customSplitPosition.Value = Random.Shared.Next(1, 7);
+            UpdateCustomStrategyPreview();
+        };
+        create.Click += (_, _) => CreateCustomStrategy();
+        customBaseStrategy.SelectedIndexChanged += (_, _) => UpdateCustomStrategyPreview();
+        customStrategyName.TextChanged += (_, _) => UpdateCustomStrategyPreview();
+        customRepeats.ValueChanged += (_, _) => UpdateCustomStrategyPreview();
+        customSplitPosition.ValueChanged += (_, _) => UpdateCustomStrategyPreview();
+        page.Controls.Add(customPreview); page.Controls.Add(previewTitle); page.Controls.Add(actions); page.Controls.Add(form); page.Controls.Add(title); page.Controls.Add(warning);
+    }
+
     void LoadState()
     {
-        var bats = Directory.EnumerateFiles(root, "*.bat", SearchOption.TopDirectoryOnly)
-            .Where(IsZapretStrategy)
-            .OrderBy(p => NaturalKey(Path.GetFileName(p))).ToArray();
-        strategies.Items.AddRange(bats.Select(Path.GetFileName).ToArray()!);
-        strategyPicker.Items.AddRange(bats.Select(Path.GetFileName).ToArray()!);
-        if (strategies.Items.Count > 0) strategies.SelectedIndex = Math.Max(0, Array.FindIndex(bats, p => Path.GetFileName(p) == config.LastStrategy));
-        if (strategyPicker.Items.Count > 0) strategyPicker.SelectedIndex = Math.Max(0, Array.FindIndex(bats, p => Path.GetFileName(p) == config.LastStrategy));
+        RefreshStrategyPickers();
         var checkFile = Path.Combine(listsDir, "check_lists.txt");
         if (!File.Exists(checkFile)) File.WriteAllLines(checkFile, DefaultDomains(), new UTF8Encoding(false));
         domains.Lines = File.ReadAllLines(checkFile);
@@ -585,6 +640,27 @@ internal sealed class MainForm : Form
         listPicker.SelectedIndex = 1;
     }
 
+    void RefreshStrategyPickers(string? preferredName = null)
+    {
+        string? selected = preferredName ?? strategies.SelectedItem as string ?? config.LastStrategy;
+        var bats = Directory.EnumerateFiles(root, "*.bat", SearchOption.TopDirectoryOnly)
+            .Where(IsZapretStrategy)
+            .OrderBy(p => NaturalKey(Path.GetFileName(p))).ToArray();
+        string[] names = bats.Select(Path.GetFileName).ToArray()!;
+        strategies.Items.Clear(); strategyPicker.Items.Clear(); customBaseStrategy.Items.Clear();
+        strategies.Items.AddRange(names); strategyPicker.Items.AddRange(names); customBaseStrategy.Items.AddRange(names);
+        int index = Array.FindIndex(names, x => string.Equals(x, selected, StringComparison.OrdinalIgnoreCase));
+        if (names.Length > 0)
+        {
+            int selectedIndex = Math.Max(0, index);
+            strategies.SelectedIndex = selectedIndex;
+            strategyPicker.SelectedIndex = selectedIndex;
+            customBaseStrategy.SelectedIndex = selectedIndex;
+        }
+        RefreshStrategyReferences();
+        UpdateCustomStrategyPreview();
+    }
+
     static string NaturalKey(string s) => Regex.Replace(s, @"\d+", m => m.Value.PadLeft(10, '0'));
     static bool IsZapretStrategy(string path)
     {
@@ -594,6 +670,70 @@ internal sealed class MainForm : Form
         }
         catch (IOException) { return false; }
         catch (UnauthorizedAccessException) { return false; }
+    }
+    static readonly Regex RepeatsValueRegex = new(@"(?<=--dpi-desync-repeats=)\d+", RegexOptions.IgnoreCase);
+    static readonly Regex SplitPositionRegex = new(@"--dpi-desync-split-pos=(?<position>\d+)(?<tail>(?:,[^\s\^]+)*)", RegexOptions.IgnoreCase);
+    string? CustomBaseStrategyPath() => customBaseStrategy.SelectedItem is string s ? Path.Combine(root, s) : null;
+    string MakeCustomStrategyFileName(string rawName)
+    {
+        string name = rawName.Trim();
+        if (name.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)) name = name[..^4];
+        foreach (char invalid in Path.GetInvalidFileNameChars()) name = name.Replace(invalid, ' ');
+        name = Regex.Replace(name, @"\s+", " ").Trim(' ', '.');
+        return name.Length == 0 ? "" : name + " (CUSTOM).bat";
+    }
+    void UpdateCustomStrategyPreview()
+    {
+        if (CustomBaseStrategyPath() is not { } path || !File.Exists(path))
+        {
+            customPreview.Text = "Выберите основу — существующую стратегию WinWS.";
+            return;
+        }
+        string text = File.ReadAllText(path);
+        int repeatCount = RepeatsValueRegex.Matches(text).Count;
+        int splitCount = SplitPositionRegex.Matches(text).Count;
+        string fileName = MakeCustomStrategyFileName(customStrategyName.Text);
+        customPreview.Text = $"Основа: {Path.GetFileName(path)}\r\n" +
+            $"Новый файл: {(fileName.Length == 0 ? "укажите название" : fileName)}\r\n\r\n" +
+            $"Интенсивность {customRepeats.Value}: заменит параметров --dpi-desync-repeats: {repeatCount}\r\n" +
+            $"TCP-позиция {customSplitPosition.Value}: заменит числовых --dpi-desync-split-pos: {splitCount}\r\n\r\n" +
+            (repeatCount + splitCount == 0 ? "В этой основе нет изменяемых параметров — выберите другой ALT." : "Остальная команда и все списки останутся без изменений.");
+    }
+    void CreateCustomStrategy()
+    {
+        if (CustomBaseStrategyPath() is not { } source || !File.Exists(source))
+        {
+            MessageBox.Show(this, "Выберите существующую стратегию-основу.", "Создание стратегии", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        string fileName = MakeCustomStrategyFileName(customStrategyName.Text);
+        if (fileName.Length == 0)
+        {
+            MessageBox.Show(this, "Введите название новой стратегии.", "Создание стратегии", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        string target = Path.Combine(root, fileName);
+        if (File.Exists(target))
+        {
+            MessageBox.Show(this, "Файл с таким названием уже существует. Укажите другое название.", "Создание стратегии", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        string text = File.ReadAllText(source);
+        int repeatsChanged = RepeatsValueRegex.Matches(text).Count;
+        int splitChanged = SplitPositionRegex.Matches(text).Count;
+        if (repeatsChanged + splitChanged == 0)
+        {
+            MessageBox.Show(this, "В выбранной основе нет параметров, которые может изменить простой мастер. Выберите другой ALT.", "Создание стратегии", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        text = RepeatsValueRegex.Replace(text, ((int)customRepeats.Value).ToString());
+        text = SplitPositionRegex.Replace(text, m => "--dpi-desync-split-pos=" + (int)customSplitPosition.Value + m.Groups["tail"].Value);
+        string header = $":: Создано Zapret Alt Finder v2.0 | Основа: {Path.GetFileName(source)} | Интенсивность: {customRepeats.Value} | TCP-позиция: {customSplitPosition.Value}{Environment.NewLine}";
+        File.WriteAllText(target, header + text, new UTF8Encoding(false));
+        RefreshStrategyPickers(fileName);
+        status.Text = $"Создана стратегия: {fileName}";
+        Log($"Создан {fileName} на основе {Path.GetFileName(source)}; repeats: {repeatsChanged}, split-pos: {splitChanged}.");
+        MessageBox.Show(this, $"Создана новая стратегия:\n{fileName}\n\nПроверьте её во вкладке «Поиск стратегии».", "Готово", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
     sealed record ListFile(string Title, string FileName, bool UserEditable)
     {
