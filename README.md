@@ -1,23 +1,81 @@
-# Zapret Alt Finder
+<h1 align="center">❛❜ Zapret Alt Finder ❛❜</h1>
 
-`ZapretAltFinder.exe` нужно закинуть в корень папки с Zapret — рядом с папками `bin`, `lists` и `utils`.
-> Запускайте программу от имени администратора.
+<p align="center">
+  ╔══════════════════════════════════════╗<br>
+  ☆ Windows GUI для Zapret и WinWS ☆<br>
+  ╚══════════════════════════════════════╝
+</p>
 
-## Возможности
+<p align="center">
+  <a href="https://github.com/ZloboocGip/ZapretAltFinder/releases/latest">« Скачать последнюю версию »</a>
+</p>
 
-- Быстрая проверка ALT-стратегий WinWS.
-- Поиск рабочей стратегии для выбранных сайтов и сервисов.
-- Готовые профили: Discord, Roblox, Steam, YouTube.
-- Для Discord: простой шаблон сайтов и расширенный профиль с API, Gateway и CDN.
-- Проверка без включённой стратегии.
-- Редактирование доменных и IP-листов.
-- Автозапуск через Планировщик задач Windows.
+## ✧ Что это
 
-## Zapret
+Zapret Alt Finder — программа для поиска и проверки ALT-стратегий WinWS.
 
-Основа: [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube)
+Она помогает проверить сайты и сервисы, выбрать рабочую стратегию, запускать её и управлять списками Zapret без ручного редактирования BAT-файлов.
 
-## Автор ZapretAltFinder
+## ☆ Установка
 
-Tg: @taiufun
-Discord: stall_0ne
+❛ 1. Скачай EXE из [Releases](https://github.com/ZloboocGip/ZapretAltFinder/releases)  
+❛ 2. Помести EXE в корень готовой папки Zapret  
+❛ 3. Запусти программу от имени администратора  
+
+Структура папки:
+
+    zapret/
+    ╠══ ZapretAltFinder.exe
+    ╠══ bin/
+    ╠══ lists/
+    ╚══ utils/
+
+## ✧ Возможности
+
+☁ Автоматический перебор ALT-стратегий WinWS  
+☁ Проверка сайтов и сервисных профилей без стратегии  
+☁ Запуск и остановка выбранной стратегии  
+☁ Профили Discord, Roblox, Steam, YouTube, Signal, WhatsApp, Telegram и других сервисов  
+☁ Проверка HTTPS, DNS, WebSocket и UDP  
+☁ Редактирование доменных и IP-листов  
+☁ Исключение стратегий из перебора без удаления BAT-файлов  
+☁ Автозапуск через Планировщик задач Windows  
+☁ Проверка своего или указанного вручную IP-адреса  
+
+## ☆ Быстрый старт
+
+〝 Выбери профиль, например Discord  
+〝 Нажми «Проверить без стратегии»  
+〝 Выдели нужные стратегии  
+〝 Запусти перебор  
+〝 Сохрани рабочий вариант в профиль  
+
+## ✧ Скриншоты
+
+<p align="center">
+  <img src="docs/images/main-window.png" alt="Главное окно" width="900">
+</p>
+
+<p align="center">
+  <img src="docs/images/strategy-test.png" alt="Результаты проверки" width="900">
+</p>
+
+## ❛ Важно ❜
+
+╠═ Программа рассчитана на готовую папку Zapret  
+╠═ Рядом с EXE должны быть папки bin, lists и utils  
+╠═ Одновременно должна работать только одна стратегия WinWS  
+╠═ Ошибка DNS не всегда означает недоступность всего сервиса  
+╚═ UDP-проверка не заменяет реальное подключение к голосовому каналу или игре  
+
+## ☆ Основа
+
+‹ [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) ›  
+‹ [bol-van/zapret-win-bundle](https://github.com/bol-van/zapret-win-bundle) ›
+
+## ✧ Обратная связь
+
+Нашёл ошибку или есть идея?  
+« [Создать Issue](https://github.com/ZloboocGip/ZapretAltFinder/issues/new/choose) »
+
+〞 Автор: [@taiufun](https://t.me/taiufun) 〝
