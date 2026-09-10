@@ -20,3 +20,4 @@
 ## Автор ZapretAltFinder
 
 Tg: @taiufun
+Discord: stall_0ne
