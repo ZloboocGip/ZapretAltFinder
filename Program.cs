@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Security.Principal;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -16,7 +17,11 @@ internal static class Program
     static void Main()
     {
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
+        try { Application.Run(new MainForm()); }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Zapret Alt Finder не удалось запустить.\n\n{ex.Message}\n\nПоместите EXE в корень папки Zapret: рядом должны быть папки bin, lists и utils.", "Ошибка запуска", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 }
 
@@ -27,10 +32,12 @@ internal sealed class AppConfig
     public int WarmupMilliseconds { get; set; } = 1800;
     public string? LastStrategy { get; set; }
     public List<string> ExcludedStrategies { get; set; } = [];
-    public string Theme { get; set; } = "Light";
 }
 
-internal sealed record ProbeResult(string Host, bool Ok, int? Status, long Milliseconds, string Detail);
+internal enum ServiceCheckKind { Https, WebSocket, UdpTransport }
+internal sealed record ServiceTarget(string Name, string Host, ServiceCheckKind Kind, string Path = "/", int Port = 443, bool Required = true);
+internal sealed record ServiceProfile(string Name, string Description, IReadOnlyList<ServiceTarget> Targets);
+internal sealed record ProbeResult(string Target, string Type, bool Ok, int? Status, long Milliseconds, string Detail, bool Required);
 
 internal sealed class MainForm : Form
 {
@@ -63,7 +70,6 @@ internal sealed class MainForm : Form
     readonly CheckBox updates = new() { Text = "Проверять обновления" };
     readonly ComboBox discordFake = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     readonly ComboBox gameFake = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
-    readonly ComboBox themePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
     readonly CheckBox startupWithWindows = new() { Text = "Запускать с Windows" };
     readonly ComboBox templates = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
     readonly ComboBox listPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
@@ -75,23 +81,39 @@ internal sealed class MainForm : Form
     readonly ComboBox referenceFile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
     readonly DataGridView referenceGrid = new() { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect };
     bool updatingStartupSetting;
+    bool applyingProfile;
+    ServiceProfile? activeProfile;
 
     const string StartupTaskName = "ZapretAltFinder";
 
-    static readonly IReadOnlyDictionary<string, string[]> DomainTemplates = new Dictionary<string, string[]>
+    static readonly IReadOnlyDictionary<string, ServiceProfile> ServiceProfiles = new Dictionary<string, ServiceProfile>
     {
-        ["Discord"] = ["discord.com", "discord.gg", "gateway.discord.gg", "cdn.discordapp.com", "updates.discord.com", "discordstatus.com"],
-        ["Roblox"] = ["www.roblox.com", "clientsettings.api.roblox.com", "versioncompatibility.api.roblox.com", "chat.roblox.com", "assetgame.roblox.com", "setup.roblox.com", "setup.rbxcdn.com", "js.rbxcdn.com", "static.rbxcdn.com", "captcha.roblox.com"],
-        ["Steam"] = ["store.steampowered.com", "help.steampowered.com", "steamcommunity.com", "cdn.cloudflare.steamstatic.com", "steamuserimages-a.akamaihd.net", "avatars.akamai.steamstatic.com"],
-        ["YouTube"] = ["www.youtube.com", "youtu.be", "i.ytimg.com", "redirector.googlevideo.com", "www.google.com", "www.gstatic.com"],
-        ["Discord + Roblox"] = ["discord.com", "discord.gg", "gateway.discord.gg", "cdn.discordapp.com", "www.roblox.com", "assetgame.roblox.com", "setup.rbxcdn.com", "static.rbxcdn.com"],
-        ["Всё"] = ["discord.com", "discord.gg", "gateway.discord.gg", "cdn.discordapp.com", "www.roblox.com", "assetgame.roblox.com", "setup.rbxcdn.com", "store.steampowered.com", "steamcommunity.com", "cdn.cloudflare.steamstatic.com", "www.youtube.com", "i.ytimg.com", "redirector.googlevideo.com"]
+        ["Discord — API, Gateway и CDN"] = new(
+            "Discord — API, Gateway и CDN",
+            "API, WebSocket Gateway и два официально используемых CDN-домена. UDP — только проверка готовности транспорта, не голосового канала.",
+            [
+                new("Discord сайт", "discord.com", ServiceCheckKind.Https),
+                new("Discord API: Get Gateway", "discord.com", ServiceCheckKind.Https, "/api/v10/gateway"),
+                new("Discord Gateway (WSS)", "gateway.discord.gg", ServiceCheckKind.WebSocket, "/?v=10&encoding=json"),
+                new("Discord CDN", "cdn.discordapp.com", ServiceCheckKind.Https, "/embed/avatars/0.png"),
+                new("Discord Media CDN", "media.discordapp.net", ServiceCheckKind.Https, "/embed/avatars/0.png"),
+                new("Discord Status", "discordstatus.com", ServiceCheckKind.Https),
+                new("UDP transport (не Voice)", "gateway.discord.gg", ServiceCheckKind.UdpTransport, Port: 443, Required: false)
+            ]),
+        ["Discord — простые сайты"] = FromHosts("Discord — простые сайты", "Обычная HTTPS-проверка сайтов без WSS и UDP; аналог старого шаблона.", ["discord.com", "discord.gg", "gateway.discord.gg", "cdn.discordapp.com", "updates.discord.com", "discordstatus.com"]),
+        ["Roblox — сайт и API"] = FromHosts("Roblox — сайт и API", "Базовые HTTPS-цели Roblox.", ["www.roblox.com", "clientsettings.api.roblox.com", "versioncompatibility.api.roblox.com", "chat.roblox.com", "assetgame.roblox.com", "setup.roblox.com", "setup.rbxcdn.com", "js.rbxcdn.com", "static.rbxcdn.com"]),
+        ["Steam — сайт и CDN"] = FromHosts("Steam — сайт и CDN", "Базовые HTTPS-цели Steam.", ["store.steampowered.com", "help.steampowered.com", "steamcommunity.com", "cdn.cloudflare.steamstatic.com", "steamuserimages-a.akamaihd.net", "avatars.akamai.steamstatic.com"]),
+        ["YouTube — сайт и CDN"] = FromHosts("YouTube — сайт и CDN", "Базовые HTTPS-цели YouTube.", ["www.youtube.com", "youtu.be", "i.ytimg.com", "redirector.googlevideo.com", "www.google.com", "www.gstatic.com"])
     };
+
+    static ServiceProfile FromHosts(string name, string description, string[] hosts) => new(name, description, hosts.Select(x => new ServiceTarget(x, x, ServiceCheckKind.Https)).ToArray());
 
     public MainForm()
     {
         listsDir = Path.Combine(root, "lists");
         utilsDir = Path.Combine(root, "utils");
+        Directory.CreateDirectory(listsDir);
+        Directory.CreateDirectory(utilsDir);
         configPath = Path.Combine(utilsDir, "alt-finder.json");
         config = LoadConfig();
         Text = "Zapret Alt Finder";
@@ -113,7 +135,8 @@ internal sealed class MainForm : Form
         var strategyPage = new TabPage("Стратегия и списки");
         tabs.TabPages.AddRange([testPage, listsPage, strategyPage, settingsPage]);
 
-        results.Columns.Add("Domain", "Домен");
+        results.Columns.Add("Target", "Цель");
+        results.Columns.Add("Type", "Проверка");
         results.Columns.Add("Result", "Результат");
         results.Columns.Add("Time", "Время");
         results.Columns.Add("Details", "Подробности");
@@ -127,11 +150,12 @@ internal sealed class MainForm : Form
         ConfigureStrategyList();
         left.Controls.Add(strategies, 0, 1);
         var domainHeader = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
-        domainHeader.Controls.Add(new Label { Text = "Цели:", AutoSize = true, Padding = new Padding(0, 5, 3, 0) });
-        templates.Items.AddRange(DomainTemplates.Keys.ToArray()); templates.SelectedIndex = 0;
-        var loadTemplate = new Button { Text = "Загрузить шаблон", AutoSize = true, Height = 25, Margin = new Padding(4, 1, 0, 0) };
-        loadTemplate.Click += (_, _) => { if (templates.SelectedItem is string name) domains.Lines = DomainTemplates[name]; };
+        domainHeader.Controls.Add(new Label { Text = "Профиль:", AutoSize = true, Padding = new Padding(0, 5, 3, 0) });
+        templates.Items.AddRange(ServiceProfiles.Keys.ToArray()); templates.SelectedIndex = 0;
+        var loadTemplate = new Button { Text = "Загрузить профиль", AutoSize = true, Height = 25, Margin = new Padding(4, 1, 0, 0) };
+        loadTemplate.Click += (_, _) => LoadSelectedProfile();
         domainHeader.Controls.Add(templates); domainHeader.Controls.Add(loadTemplate);
+        domains.TextChanged += (_, _) => { if (!applyingProfile) activeProfile = null; };
         left.Controls.Add(domainHeader, 0, 2);
         left.Controls.Add(domains, 0, 3);
 
@@ -240,15 +264,6 @@ internal sealed class MainForm : Form
         int row = 0;
         void Add(string title, Control control, string note) { table.RowStyles.Add(new RowStyle(SizeType.Absolute, 42)); table.Controls.Add(new Label { Text = title, AutoSize = true, Padding = new Padding(0, 9, 0, 0) }, 0, row); table.Controls.Add(control, 1, row); table.Controls.Add(new Label { Text = note, AutoSize = true, Padding = new Padding(0, 9, 0, 0), ForeColor = Color.DimGray }, 2, row++); }
         Add("Game Filter", gameMode, "utils\\game_filter.enabled");
-        themePicker.Items.AddRange(["Светлая", "Тёмная"]);
-        themePicker.SelectedItem = IsDarkTheme ? "Тёмная" : "Светлая";
-        themePicker.SelectedIndexChanged += (_, _) =>
-        {
-            config.Theme = themePicker.SelectedItem as string == "Тёмная" ? "Dark" : "Light";
-            ApplyTheme();
-            SaveConfig();
-        };
-        Add("Тема", themePicker, "сохраняется в utils\\alt-finder.json");
         SetStartupCheckbox(IsStartupTaskEnabled());
         startupWithWindows.CheckedChanged += (_, _) =>
         {
@@ -313,6 +328,10 @@ internal sealed class MainForm : Form
         {
             return false;
         }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
     }
 
     void SetStartupTask(bool enabled)
@@ -323,6 +342,7 @@ internal sealed class MainForm : Form
         {
             try { folder.DeleteTask(StartupTaskName, 0); }
             catch (COMException) { }
+            catch (FileNotFoundException) { }
             return;
         }
 
@@ -359,11 +379,8 @@ internal sealed class MainForm : Form
         folder.RegisterTaskDefinition(StartupTaskName, definition, TaskCreateOrUpdate, currentUser, null, TaskLogonInteractiveToken, null);
     }
 
-    bool IsDarkTheme => string.Equals(config.Theme, "Dark", StringComparison.OrdinalIgnoreCase);
     readonly record struct ThemePalette(Color Back, Color Surface, Color Text, Color Muted, Color Border, Color Selection, Color SelectionText, Color Success, Color Error);
-    ThemePalette Palette => IsDarkTheme
-        ? new(Color.FromArgb(24, 26, 31), Color.FromArgb(34, 37, 44), Color.FromArgb(232, 235, 241), Color.FromArgb(170, 176, 188), Color.FromArgb(72, 77, 89), Color.FromArgb(54, 91, 138), Color.White, Color.FromArgb(31, 64, 46), Color.FromArgb(78, 40, 48))
-        : new(Color.FromArgb(245, 246, 248), Color.White, Color.FromArgb(31, 35, 42), Color.FromArgb(95, 101, 112), Color.FromArgb(210, 214, 221), Color.FromArgb(0, 120, 215), Color.White, Color.Honeydew, Color.MistyRose);
+    ThemePalette Palette => new(Color.FromArgb(245, 246, 248), Color.White, Color.FromArgb(31, 35, 42), Color.FromArgb(95, 101, 112), Color.FromArgb(210, 214, 221), Color.FromArgb(0, 120, 215), Color.White, Color.Honeydew, Color.MistyRose);
 
     void ApplyTheme()
     {
@@ -394,8 +411,8 @@ internal sealed class MainForm : Form
                 text.ForeColor = p.Text;
                 if (ReferenceEquals(text, log))
                 {
-                    text.BackColor = IsDarkTheme ? Color.FromArgb(20, 22, 26) : Color.FromArgb(250, 250, 250);
-                    text.ForeColor = IsDarkTheme ? Color.Gainsboro : Color.FromArgb(35, 38, 45);
+                    text.BackColor = Color.FromArgb(250, 250, 250);
+                    text.ForeColor = Color.FromArgb(35, 38, 45);
                 }
                 break;
             case ListBox list:
@@ -428,7 +445,7 @@ internal sealed class MainForm : Form
                 grid.DefaultCellStyle.ForeColor = p.Text;
                 grid.DefaultCellStyle.SelectionBackColor = p.Selection;
                 grid.DefaultCellStyle.SelectionForeColor = p.SelectionText;
-                grid.ColumnHeadersDefaultCellStyle.BackColor = IsDarkTheme ? Color.FromArgb(45, 49, 58) : Color.FromArgb(235, 238, 243);
+                grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 238, 243);
                 grid.ColumnHeadersDefaultCellStyle.ForeColor = p.Text;
                 grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = grid.ColumnHeadersDefaultCellStyle.BackColor;
                 grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = p.Text;
@@ -524,7 +541,10 @@ internal sealed class MainForm : Form
         gameMode.SelectedIndex = !File.Exists(gf) ? 0 : File.ReadAllText(gf).Trim().ToLowerInvariant() switch { "all" => 1, "tcp" => 2, _ => 3 };
         updates.Checked = File.Exists(Path.Combine(utilsDir, "check_updates.enabled"));
         ipsetMode.SelectedIndex = DetectIpsetMode();
-        var fakeFiles = Directory.EnumerateFiles(Path.Combine(root, "bin"), "*.bin").Where(p => !Path.GetFileName(p).StartsWith("ACTIVE_", StringComparison.OrdinalIgnoreCase)).OrderBy(Path.GetFileName).ToArray();
+        string binDir = Path.Combine(root, "bin");
+        var fakeFiles = Directory.Exists(binDir)
+            ? Directory.EnumerateFiles(binDir, "*.bin").Where(p => !Path.GetFileName(p).StartsWith("ACTIVE_", StringComparison.OrdinalIgnoreCase)).OrderBy(Path.GetFileName).ToArray()
+            : [];
         discordFake.Items.AddRange(fakeFiles.Select(Path.GetFileName).ToArray()!); gameFake.Items.AddRange(fakeFiles.Select(Path.GetFileName).ToArray()!);
         SelectActiveFake(discordFake, "ACTIVE_DISCORD_UDP.bin", fakeFiles); SelectActiveFake(gameFake, "ACTIVE_GAME_UDP.bin", fakeFiles);
         listPicker.SelectedIndex = 1;
@@ -583,6 +603,24 @@ internal sealed class MainForm : Form
         status.Text = $"Список приведён в порядок: {values.Count} целей.";
     }
     static string[] DefaultDomains() => ["discord.com", "discord.gg", "discordsays.com", "discordsez.com", "discordstatus.com"];
+    void LoadSelectedProfile()
+    {
+        if (templates.SelectedItem is not string name || !ServiceProfiles.TryGetValue(name, out var profile)) return;
+        applyingProfile = true;
+        try
+        {
+            activeProfile = profile;
+            domains.Lines = profile.Targets.Select(x => x.Host).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+        finally { applyingProfile = false; }
+        status.Text = $"Загружен профиль: {profile.Name}. {profile.Description}";
+        Log($"Профиль {profile.Name}: {profile.Targets.Count} проверок, обязательных: {profile.Targets.Count(x => x.Required)}.");
+    }
+    List<ServiceTarget> GetProbeTargets()
+    {
+        if (activeProfile is not null) return activeProfile.Targets.ToList();
+        return GetHosts().Select(host => new ServiceTarget(host, host, ServiceCheckKind.Https)).ToList();
+    }
     string? SelectedBat() => strategies.SelectedItem is string s ? Path.Combine(root, s) : null;
     string? SelectedStrategyPath() => strategyPicker.SelectedItem is string s ? Path.Combine(root, s) : null;
     bool IsStrategyExcluded(string name) => config.ExcludedStrategies.Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
@@ -667,7 +705,7 @@ internal sealed class MainForm : Form
         try
         {
             await StopAllWinwsAsync();
-            var hosts = GetHosts();
+            var targets = GetProbeTargets();
             int current = 0;
             for (int i = 0; i < strategies.Items.Count; i++)
             {
@@ -679,13 +717,14 @@ internal sealed class MainForm : Form
                 string bat = SelectedBat()!; Log($"\r\n[{current}/{enabledCount}] {Path.GetFileName(bat)}");
                 if (!await StartStrategyAsync(bat, runCts.Token)) continue;
                 await Task.Delay((int)warmup.Value, runCts.Token);
-                var probes = await ProbeAllAsync(hosts, runCts.Token); ShowResults(probes);
-                int ok = probes.Count(x => x.Ok); Log($"Результат: {ok}/{probes.Count}");
-                if (ok == probes.Count)
+                var probes = await ProbeAllAsync(targets, runCts.Token); ShowResults(probes);
+                int required = probes.Count(x => x.Required);
+                int ok = probes.Count(x => x.Required && x.Ok); Log($"Результат обязательных целей: {ok}/{required}");
+                if (ok == required)
                 {
                     config.LastStrategy = Path.GetFileName(bat); SaveConfig();
                     status.Text = $"Найдена: {config.LastStrategy} — оставлена запущенной";
-                    MessageBox.Show(this, $"Все {ok} доменов доступны.\n\n{config.LastStrategy} оставлена запущенной.", "Стратегия найдена", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(this, $"Все обязательные цели ({ok}/{required}) доступны.\n\n{config.LastStrategy} оставлена запущенной.", "Стратегия найдена", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
                 await StopOwnedAsync();
@@ -706,8 +745,8 @@ internal sealed class MainForm : Form
             await StopAllWinwsAsync();
             if (!await StartStrategyAsync(bat, runCts.Token)) return;
             await Task.Delay((int)warmup.Value, runCts.Token);
-            var probes = await ProbeAllAsync(GetHosts(), runCts.Token); ShowResults(probes);
-            bool all = probes.All(x => x.Ok); status.Text = all ? $"Работает: {Path.GetFileName(bat)}" : $"Не прошла: {Path.GetFileName(bat)}";
+            var probes = await ProbeAllAsync(GetProbeTargets(), runCts.Token); ShowResults(probes);
+            bool all = probes.Where(x => x.Required).All(x => x.Ok); status.Text = all ? $"Работает: {Path.GetFileName(bat)}" : $"Не прошла: {Path.GetFileName(bat)}";
             if (!all || !keepOnSuccess) await StopOwnedAsync();
         }
         catch (OperationCanceledException) { status.Text = "Остановлено"; await StopOwnedAsync(); }
@@ -716,17 +755,17 @@ internal sealed class MainForm : Form
 
     async Task TestWithoutStrategyAsync()
     {
-        if (GetHosts().Count == 0) { MessageBox.Show("Нет корректных доменов."); return; }
+        if (GetProbeTargets().Count == 0) { MessageBox.Show("Нет корректных доменов."); return; }
         File.WriteAllLines(Path.Combine(listsDir, "check_lists.txt"), domains.Lines, new UTF8Encoding(false));
         SetRunning(true); runCts = new();
         try
         {
             await StopAllWinwsAsync();
             status.Text = "Проверка прямого подключения без winws...";
-            var probes = await ProbeAllAsync(GetHosts(), runCts.Token); ShowResults(probes);
-            int ok = probes.Count(x => x.Ok);
-            status.Text = $"Без стратегии: {ok}/{probes.Count} доступны";
-            Log($"Базовая проверка без стратегии: {ok}/{probes.Count}");
+            var probes = await ProbeAllAsync(GetProbeTargets(), runCts.Token); ShowResults(probes);
+            int required = probes.Count(x => x.Required), ok = probes.Count(x => x.Required && x.Ok);
+            status.Text = $"Без стратегии: обязательные цели {ok}/{required} доступны";
+            Log($"Базовая проверка без стратегии: обязательные цели {ok}/{required}");
         }
         catch (OperationCanceledException) { status.Text = "Остановлено"; }
         finally { SetRunning(false); }
@@ -886,7 +925,7 @@ internal sealed class MainForm : Form
     {
         File.WriteAllLines(Path.Combine(listsDir, "check_lists.txt"), domains.Lines, new UTF8Encoding(false));
         if (!File.Exists(Path.Combine(root, "bin", "winws.exe"))) { MessageBox.Show("Не найден bin\\winws.exe. Положите программу в корень сборки Flowseal."); return false; }
-        if (strategies.Items.Count == 0 || GetHosts().Count == 0) { MessageBox.Show("Нет стратегий или корректных доменов."); return false; }
+        if (strategies.Items.Count == 0 || GetProbeTargets().Count == 0) { MessageBox.Show("Нет стратегий или корректных целей."); return false; }
         if (ServiceRunning("zapret")) { MessageBox.Show("Служба zapret запущена. Сначала удалите/остановите её через service.bat, иначе тест будет недостоверным.", "Конфликт", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
         return true;
     }
@@ -907,51 +946,93 @@ internal sealed class MainForm : Form
         Log($"Запущен winws PID: {string.Join(", ", added)}"); return true;
     }
 
-    async Task<List<ProbeResult>> ProbeAllAsync(List<string> hosts, CancellationToken token)
+    static string CheckTypeName(ServiceCheckKind kind) => kind switch
     {
-        int count = (int)attempts.Value; int seconds = (int)timeout.Value;
-        // Connect timeout and whole-request timeout are deliberately different.
-        // A first TLS connection through WinDivert can fit into the connect limit but
-        // need a little longer for HTTP headers. Treating both as one limit caused
-        // false negatives (for example discord.com at a 2 second setting).
+        ServiceCheckKind.Https => "HTTPS",
+        ServiceCheckKind.WebSocket => "WSS Gateway",
+        _ => "UDP transport*"
+    };
+
+    async Task<List<ProbeResult>> ProbeAllAsync(List<ServiceTarget> targets, CancellationToken token)
+    {
+        int count = (int)attempts.Value;
+        int seconds = (int)timeout.Value;
         int requestSeconds = Math.Max(6, seconds * 2);
-        var tasks = hosts.Select(async host =>
+        var tasks = targets.Select(target => ProbeTargetAsync(target, count, seconds, requestSeconds, token));
+        return (await Task.WhenAll(tasks)).OrderBy(x => x.Target, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    static string TargetTitle(ServiceTarget target) => target.Required ? target.Name : target.Name + " (необязательно)";
+
+    async Task<ProbeResult> ProbeTargetAsync(ServiceTarget target, int count, int seconds, int requestSeconds, CancellationToken token)
+    {
+        string title = TargetTitle(target);
+        string type = CheckTypeName(target.Kind);
+        IPAddress[] resolved;
+        try
         {
-            ProbeResult last = new(host, false, null, 0, "нет ответа");
-            string addressText;
+            resolved = await Dns.GetHostAddressesAsync(target.Host, token).WaitAsync(TimeSpan.FromSeconds(seconds), token);
+            if (resolved.Length == 0) return new ProbeResult(title, type, false, null, 0, "DNS: адреса не найдены (NXDOMAIN/NO_DATA)", target.Required);
+        }
+        catch (SocketException ex) { return new ProbeResult(title, type, false, null, 0, $"DNS: имя не существует или недоступно ({ex.SocketErrorCode})", target.Required); }
+        catch (TimeoutException) { return new ProbeResult(title, type, false, null, 0, "DNS: таймаут", target.Required); }
+
+        string addressText = string.Join(", ", resolved.Take(3).Select(x => x.ToString()));
+        ProbeResult last = new(title, type, false, null, 0, "нет ответа", target.Required);
+        for (int attempt = 1; attempt <= count; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+            var sw = Stopwatch.StartNew();
             try
             {
-                var resolved = await Dns.GetHostAddressesAsync(host, token).WaitAsync(TimeSpan.FromSeconds(seconds), token);
-                if (resolved.Length == 0) return new ProbeResult(host, false, null, 0, "DNS: адреса не найдены (NXDOMAIN/NO_DATA)");
-                addressText = string.Join(", ", resolved.Take(3).Select(x => x.ToString()));
-            }
-            catch (SocketException ex) { return new ProbeResult(host, false, null, 0, $"DNS: имя не существует или недоступно ({ex.SocketErrorCode})"); }
-            catch (TimeoutException) { return new ProbeResult(host, false, null, 0, "DNS: таймаут"); }
-            for (int n = 1; n <= count; n++)
-            {
-                token.ThrowIfCancellationRequested();
-                var sw = Stopwatch.StartNew();
-                try
+                if (target.Kind == ServiceCheckKind.Https)
                 {
                     using var handler = new SocketsHttpHandler { AllowAutoRedirect = false, ConnectTimeout = TimeSpan.FromSeconds(seconds), AutomaticDecompression = DecompressionMethods.All };
                     using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(requestSeconds) };
                     client.DefaultRequestHeaders.UserAgent.ParseAdd("ZapretAltFinder/1.0");
-                    using var req = new HttpRequestMessage(HttpMethod.Get, $"https://{host}/");
-                    using var response = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token);
-                    last = new(host, true, (int)response.StatusCode, sw.ElapsedMilliseconds, $"IP {addressText}; HTTP {(int)response.StatusCode}, попытка {n}"); break;
+                    using var response = await client.GetAsync($"https://{target.Host}{target.Path}", HttpCompletionOption.ResponseHeadersRead, token);
+                    return new ProbeResult(title, type, true, (int)response.StatusCode, sw.ElapsedMilliseconds, $"IP {addressText}; HTTP {(int)response.StatusCode}, попытка {attempt}", target.Required);
                 }
-                catch (TaskCanceledException) when (!token.IsCancellationRequested) { last = new(host, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; HTTP timeout {requestSeconds} с (connect limit {seconds} с)"); }
-                catch (HttpRequestException ex) { last = new(host, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; HTTP: {ex.Message}"); }
+
+                if (target.Kind == ServiceCheckKind.WebSocket)
+                {
+                    using var socket = new ClientWebSocket();
+                    using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    connectCts.CancelAfter(TimeSpan.FromSeconds(requestSeconds));
+                    await socket.ConnectAsync(new Uri($"wss://{target.Host}{target.Path}"), connectCts.Token);
+                    socket.Abort();
+                    return new ProbeResult(title, type, true, null, sw.ElapsedMilliseconds, $"IP {addressText}; WSS handshake, попытка {attempt}", target.Required);
+                }
+
+                using var udp = new UdpClient(resolved[0].AddressFamily);
+                udp.Connect(resolved[0], target.Port);
+                await udp.SendAsync(Array.Empty<byte>(), 0).WaitAsync(TimeSpan.FromSeconds(seconds), token);
+                return new ProbeResult(title, type, true, null, sw.ElapsedMilliseconds, $"IP {addressText}; UDP пакет отправлен. Это не проверка голосовой сессии Discord.", target.Required);
             }
-            return last;
-        });
-        return (await Task.WhenAll(tasks)).OrderBy(x => x.Host).ToList();
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                last = new ProbeResult(title, type, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; таймаут {requestSeconds} с, попытка {attempt}", target.Required);
+            }
+            catch (WebSocketException ex)
+            {
+                last = new ProbeResult(title, type, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; WSS: {ex.Message}", target.Required);
+            }
+            catch (HttpRequestException ex)
+            {
+                last = new ProbeResult(title, type, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; HTTPS: {ex.Message}", target.Required);
+            }
+            catch (SocketException ex)
+            {
+                last = new ProbeResult(title, type, false, null, sw.ElapsedMilliseconds, $"IP {addressText}; socket: {ex.SocketErrorCode}", target.Required);
+            }
+        }
+        return last;
     }
 
     void ShowResults(List<ProbeResult> probes)
     {
         results.Rows.Clear();
-        foreach (var x in probes) { int i = results.Rows.Add(x.Host, x.Ok ? $"OK ({x.Status})" : "ОШИБКА", $"{x.Milliseconds} мс", x.Detail); results.Rows[i].DefaultCellStyle.BackColor = ResultColor(x.Ok); }
+        foreach (var x in probes) { int i = results.Rows.Add(x.Target, x.Type, x.Ok ? $"OK{(x.Status is null ? "" : $" ({x.Status})")}" : "ОШИБКА", $"{x.Milliseconds} мс", x.Detail); results.Rows[i].DefaultCellStyle.BackColor = ResultColor(x.Ok); }
     }
 
     async Task StopOwnedAsync()
