@@ -44,6 +44,7 @@ internal sealed class MainForm : Form
     readonly string root = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
     readonly string listsDir;
     readonly string utilsDir;
+    readonly string backupsDir;
     readonly string configPath;
     readonly AppConfig config;
     readonly List<int> ownedPids = [];
@@ -74,6 +75,7 @@ internal sealed class MainForm : Form
     readonly ComboBox templates = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 250 };
     readonly ComboBox listPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330 };
     readonly TextBox listEditor = new() { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, AcceptsReturn = true, AcceptsTab = true, WordWrap = false, Font = new Font("Consolas", 10) };
+    readonly Button restoreList = new() { Text = "Откатить последнее изменение", AutoSize = true, Height = 28 };
     readonly TextBox addDomain = new() { Width = 290, PlaceholderText = "example.org или https://example.org" };
     readonly ComboBox strategyPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };
     readonly ComboBox blockPicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
@@ -127,8 +129,10 @@ internal sealed class MainForm : Form
     {
         listsDir = Path.Combine(root, "lists");
         utilsDir = Path.Combine(root, "utils");
+        backupsDir = Path.Combine(root, "backups");
         Directory.CreateDirectory(listsDir);
         Directory.CreateDirectory(utilsDir);
+        Directory.CreateDirectory(backupsDir);
         configPath = Path.Combine(utilsDir, "alt-finder.json");
         config = LoadConfig();
         Text = "Zapret Alt Finder";
@@ -511,13 +515,14 @@ internal sealed class MainForm : Form
         var normalize = new Button { Text = "Убрать дубликаты и отсортировать", AutoSize = true, Height = 28 };
         var add = new Button { Text = "Добавить", AutoSize = true, Height = 28 };
         top.Controls.AddRange([
-            new Label { Text = "Файл:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, listPicker, reload, save, normalize,
+            new Label { Text = "Файл:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, listPicker, reload, save, restoreList, normalize,
             new Label { Text = "  Домен:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, addDomain, add
         ]);
         var hint = new Label { Dock = DockStyle.Bottom, Height = 40, Padding = new Padding(10, 8, 10, 0), ForeColor = Color.DimGray,
             Text = "Строки с # сохраняются как комментарии. В пользовательские листы можно добавлять свои домены без изменения upstream-файлов. Сохранение вступит в силу после перезапуска стратегии." };
         reload.Click += (_, _) => LoadSelectedList();
         save.Click += (_, _) => SaveSelectedList();
+        restoreList.Click += (_, _) => RestoreSelectedList();
         normalize.Click += (_, _) => NormalizeList();
         add.Click += (_, _) => AddDomainToList();
         page.Controls.Add(listEditor); page.Controls.Add(top); page.Controls.Add(hint);
@@ -600,13 +605,49 @@ internal sealed class MainForm : Form
     {
         if (SelectedListPath() is not { } path) return;
         listEditor.Text = File.Exists(path) ? File.ReadAllText(path) : "";
+        restoreList.Enabled = File.Exists(ListBackupPath(path));
     }
     void SaveSelectedList()
     {
         if (SelectedListPath() is not { } path) return;
-        File.WriteAllText(path, listEditor.Text.Replace("\r\n", "\n").Replace("\n", Environment.NewLine), new UTF8Encoding(false));
-        Log($"Сохранён {Path.GetFileName(path)}.");
-        status.Text = $"Сохранён {Path.GetFileName(path)}. Перезапустите стратегию.";
+        WriteListText(path, listEditor.Text);
+        restoreList.Enabled = File.Exists(ListBackupPath(path));
+        Log($"Сохранён {Path.GetFileName(path)}; резервная копия создана в backups.");
+        status.Text = $"Сохранён {Path.GetFileName(path)}. Можно откатить последнее изменение.";
+    }
+    string ListBackupPath(string listPath) => Path.Combine(backupsDir, Path.GetFileName(listPath) + ".last.bak");
+    void BackupListBeforeChange(string listPath)
+    {
+        if (!File.Exists(listPath)) return;
+        Directory.CreateDirectory(backupsDir);
+        File.Copy(listPath, ListBackupPath(listPath), true);
+    }
+    void WriteListText(string listPath, string text)
+    {
+        string normalized = text.Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+        if (File.Exists(listPath) && string.Equals(File.ReadAllText(listPath), normalized, StringComparison.Ordinal)) return;
+        BackupListBeforeChange(listPath);
+        File.WriteAllText(listPath, normalized, new UTF8Encoding(false));
+    }
+    void ReplaceListFile(string listPath, string sourcePath)
+    {
+        BackupListBeforeChange(listPath);
+        File.Copy(sourcePath, listPath, true);
+    }
+    void RestoreSelectedList()
+    {
+        if (SelectedListPath() is not { } path) return;
+        string backup = ListBackupPath(path);
+        if (!File.Exists(backup))
+        {
+            MessageBox.Show(this, "Для этого списка ещё нет резервной копии.", "Откат", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (MessageBox.Show(this, $"Вернуть {Path.GetFileName(path)} к состоянию до последнего изменения?", "Откат списка", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        File.Copy(backup, path, true);
+        LoadSelectedList();
+        Log($"Восстановлен {Path.GetFileName(path)} из backups.");
+        status.Text = $"{Path.GetFileName(path)} восстановлен. Перезапустите стратегию.";
     }
     void AddDomainToList()
     {
@@ -786,7 +827,7 @@ internal sealed class MainForm : Form
     async Task TestWithoutStrategyAsync()
     {
         if (GetProbeTargets().Count == 0) { MessageBox.Show("Нет корректных доменов."); return; }
-        File.WriteAllLines(Path.Combine(listsDir, "check_lists.txt"), domains.Lines, new UTF8Encoding(false));
+        WriteListText(Path.Combine(listsDir, "check_lists.txt"), string.Join(Environment.NewLine, domains.Lines));
         SetRunning(true); runCts = new();
         try
         {
@@ -953,7 +994,7 @@ internal sealed class MainForm : Form
 
     bool ValidateReady()
     {
-        File.WriteAllLines(Path.Combine(listsDir, "check_lists.txt"), domains.Lines, new UTF8Encoding(false));
+        WriteListText(Path.Combine(listsDir, "check_lists.txt"), string.Join(Environment.NewLine, domains.Lines));
         if (!File.Exists(Path.Combine(root, "bin", "winws.exe"))) { MessageBox.Show("Не найден bin\\winws.exe. Положите программу в корень сборки Flowseal."); return false; }
         if (strategies.Items.Count == 0 || GetProbeTargets().Count == 0) { MessageBox.Show("Нет стратегий или корректных целей."); return false; }
         if (ServiceRunning("zapret")) { MessageBox.Show("Служба zapret запущена. Сначала удалите/остановите её через service.bat, иначе тест будет недостоверным.", "Конфликт", MessageBoxButtons.OK, MessageBoxIcon.Warning); return false; }
@@ -1106,8 +1147,8 @@ internal sealed class MainForm : Form
     {
         string p = Path.Combine(listsDir, "ipset-all.txt"), backup = p + ".backup";
         int old = DetectIpsetMode(); if (old == mode) return;
-        if (mode == 0) { if (File.Exists(backup)) File.Copy(backup, p, true); else throw new InvalidOperationException("Нет ipset-all.txt.backup. Обновите IPSet через service.bat."); }
-        else { if (old == 0 && File.Exists(p)) File.Copy(p, backup, true); File.WriteAllText(p, mode == 1 ? "" : "203.0.113.113/32\r\n", new UTF8Encoding(false)); }
+        if (mode == 0) { if (File.Exists(backup)) ReplaceListFile(p, backup); else throw new InvalidOperationException("Нет ipset-all.txt.backup. Обновите IPSet через service.bat."); }
+        else { if (old == 0 && File.Exists(p)) File.Copy(p, backup, true); WriteListText(p, mode == 1 ? "" : "203.0.113.113/32\r\n"); }
     }
 
     void SelectActiveFake(ComboBox box, string activeName, string[] candidates)
