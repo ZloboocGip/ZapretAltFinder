@@ -1180,14 +1180,10 @@ internal sealed class MainForm : Form
         var total = Stopwatch.StartNew();
         string title = TargetTitle(target);
         string type = CheckTypeName(target.Kind);
-        IPAddress[] resolved;
-        try
-        {
-            resolved = await Dns.GetHostAddressesAsync(target.Host, token).WaitAsync(TimeSpan.FromSeconds(seconds), token);
-            if (resolved.Length == 0) return new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), "DNS: адреса не найдены (NXDOMAIN/NO_DATA)", target.Required);
-        }
-        catch (SocketException ex) { return new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), $"DNS: имя не существует или недоступно ({ex.SocketErrorCode})", target.Required); }
-        catch (TimeoutException) { return new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), "DNS: таймаут", target.Required); }
+        var dns = await ResolveHostWithRetryAsync(target.Host, Math.Clamp(count, 2, 3), seconds, token);
+        if (dns.Addresses is null || dns.Addresses.Length == 0)
+            return new ProbeResult(title, type, false, null, ElapsedMilliseconds(total), dns.Error ?? "DNS: адреса не найдены", target.Required);
+        IPAddress[] resolved = dns.Addresses;
 
         string addressText = string.Join(", ", resolved.Take(3).Select(x => x.ToString()));
         ProbeResult last = new(title, type, false, null, 0, "нет ответа", target.Required);
@@ -1238,6 +1234,37 @@ internal sealed class MainForm : Form
             }
         }
         return last;
+    }
+
+    static async Task<(IPAddress[]? Addresses, string? Error)> ResolveHostWithRetryAsync(string host, int maxAttempts, int seconds, CancellationToken token)
+    {
+        SocketException? lastSocketError = null;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                var addresses = await Dns.GetHostAddressesAsync(host, token).WaitAsync(TimeSpan.FromSeconds(seconds), token);
+                if (addresses.Length > 0) return (addresses, null);
+                return (null, "DNS: адреса не найдены (NO_DATA)");
+            }
+            catch (SocketException ex)
+            {
+                // HostNotFound and NoData come from a DNS answer. The rest may be a temporary resolver failure.
+                if (ex.SocketErrorCode is SocketError.HostNotFound or SocketError.NoData)
+                    return (null, $"DNS: домен не существует или для него нет адресов ({ex.SocketErrorCode})");
+                lastSocketError = ex;
+            }
+            catch (TimeoutException) { }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+
+            if (attempt < maxAttempts)
+                await Task.Delay(250, token);
+        }
+
+        if (lastSocketError is not null)
+            return (null, $"DNS: временная ошибка резолвера ({lastSocketError.SocketErrorCode}), попыток: {maxAttempts}");
+        return (null, $"DNS: таймаут, попыток: {maxAttempts}");
     }
 
     static long ElapsedMilliseconds(Stopwatch stopwatch) => Math.Max(1, stopwatch.ElapsedMilliseconds);
